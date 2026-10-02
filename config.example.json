@@ -1,0 +1,32 @@
+{
+    "ircd": {
+        "network_name": "",
+        "url": "",
+        "description": "",
+        "admin_name": "",
+        "admin_username": "",
+        "admin_email": "",
+        "max_clients": 30,
+        "accepted_countries": ["US"],
+        "port": 6790,
+        "restart_pwd": "",
+        "die_pwd": "",
+        "log_path": "",
+        "log_maxsize": "100M",
+        "json_log_path": "",
+        "stats_url": "",
+        "help_channel": "#help",
+        "cloak_prefix": "Cl0ak",
+        "modes": {
+            "on_connect": "",
+            "on_oper": "",
+            "on_new_channel": ""
+        },
+        "max_channels_per_user": 50,
+        "tls_cert_path": "",
+        "tls_key_path": "",
+        "svc": {
+            "url": ""
+        }
+    }
+}

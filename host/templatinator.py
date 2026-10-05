@@ -1,8 +1,9 @@
 from __future__ import annotations
 from ast import literal_eval
 from collections.abc import Container
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from secrets import token_hex
 from string import Template
 from typing import Any, Protocol
 import argparse
@@ -11,13 +12,35 @@ import re
 import sys
 
 VARIABLE_PATTERN = re.compile(r'\$\{[\w_.]+\}|\$[\w_]+')
-_VALUE_MAPS = {}
 
 class IValueMapper(Protocol):
     """
     For when you need 'true' to become 'True' and such.
     """
     def map(self, value: Any) -> str: ...
+
+@dataclass
+class ValueGenerator:
+    _map: dict = field(default_factory=dict)
+
+    def register(self, input_arg):
+        def dec_factory(func):
+            if func.__name__ not in self._map:
+               self._map[func.__name__] = {"func": func, "arg": input_arg.replace(".", "_dot_")} 
+            return func
+        return dec_factory
+
+    def add_generated_values(self, var_full_name: str, values: dict[str, str]) -> dict[str, str]:
+        # Don't generate a value twice
+        if var_full_name not in values:
+            key_name = var_full_name.split("_gen_dot_")[-1]
+            val_input = values.get(self._map.get(key_name, {}).get("arg"))
+            functor = self._map.get(key_name, {}).get("func", lambda i: print(f"Couldn't find mapping for '{i}'"))
+            if self._map.get(key_name) is not None and functor is not None:
+                values[var_full_name] = functor(val_input)
+        return values 
+
+ircd_generator = ValueGenerator()
 
 def sanitize_dict(values: dict[str, Any], value_mapper: IValueMapper) -> dict[str, str]:
     results = {}
@@ -27,17 +50,6 @@ def sanitize_dict(values: dict[str, Any], value_mapper: IValueMapper) -> dict[st
             results.update(their_dict)
         results[k] = value_mapper.map(v)
     return results
-
-def add_generated_value(var_full_name: str, values: dict[str, str]) -> dict[str, str]:
-    # Don't generate a value twice
-    if var_full_name not in values:
-        value_name = var_full_name.replace("_gen_dot_", "")
-        val_inputs = values.get(value_name)
-        print(f"`add_generated_value` called for '{var_full_name}' (maps to '{val_inputs}')")
-        key_name = var_full_name.split("_gen_dot_")[-1]
-        if _VALUE_MAPS.get(key_name) is not None:
-            values[var_full_name] = _VALUE_MAPS[key_name](val_inputs)
-    return values 
 
 def hydrate_file(file: Path, values: dict[str, str]) -> str:
     if not file.exists() or file.stat().st_size == 0:
@@ -50,17 +62,15 @@ def hydrate_file(file: Path, values: dict[str, str]) -> str:
     placeholders_fixed = [s.replace(".", "_dot_") for s in placeholder_values]
     corrected_text = raw_text
     for current, new in zip(placeholder_values, placeholders_fixed):
-        # print(f"Replacing '{current}' w/ '{new}' => '{values.get(new.replace("${","").replace("}",""))}'")
         corrected_text = corrected_text.replace(current, new)
-        # Dispatch to generator function if necessary
-        if "_gen_dot_" in new:
-            var_full_name = new.replace("$", "").replace("{", "").replace("}", "")
-            values = add_generated_value(var_full_name, values)
+        if "_dot__gen_" in new:
+            var_full_name = new.replace("$","").replace("{","").replace("}","")
+            values = ircd_generator.add_generated_values(var_full_name, values)
     templ = Template(corrected_text)
     semi_final_text = templ.safe_substitute(values)
     # Swap the corrected values back for their original selves (it'll bother me otherwise)
     for new, current in zip(placeholder_values, placeholders_fixed):
-        semi_final_text.replace(current, new)
+        semi_final_text = semi_final_text.replace(current, new)
     return semi_final_text
             
 @dataclass
@@ -78,21 +88,39 @@ class CliArgs:
         args = vars(parser.parse_args())
         return CliArgs(**args)
 
-def value_generator(func):
-    _VALUE_MAPS[f"{func.__name__}"] = func
-    return func
-
-@value_generator
+@ircd_generator.register("ircd.accepted_countries")
 def accepted_countries(entries_raw: str) -> str:
     # First convert from string literal to list of strings 
     entries = literal_eval(entries_raw)
+    # Have to this the old-fashioned way, as f-strings freak out over nested brackets
     if isinstance(entries, Container):
-        return "{ %s; };" % '; '.join(e for e in entries)
+        return "country { %s; };" % '; '.join(e for e in entries)
     elif isinstance(entries, str):
-        return "{ %s; };" % entries
+        return "country { %s; };" % entries
     else:
         raise ValueError(f"Expected list of country code strings, or single country code string. Got '{entries}' instead (type={type(entries)})")
-    # Have to this the old-fashioned way, as f-strings freak out over nested brackets
+
+@ircd_generator.register("ircd.max_clients")
+def opers_max_clients(max_clients: str) -> str:
+    as_int = int(max_clients)
+    return str(round(as_int * 1.5))
+
+@ircd_generator.register("")
+def admin_password(_) -> str:
+    return token_hex(16)
+
+@ircd_generator.register("")
+def clk_keys(_) -> str:
+    # Need 3 quoted, long-ass strings
+    keys = [f"\"{token_hex(48)}\";" for _ in range(3)]
+    return ('\n' + (' ' * 12)).join(keys)
+
+@ircd_generator.register("ircd.log_maxsize")
+def json_log_maxsize(maxsize_str: str) -> str:
+    numbers = re.findall(r'\d+', maxsize_str)[0]
+    suffix = maxsize_str.split(numbers)[-1]
+    as_int = int(numbers)
+    return f"{round(as_int * 1.5)}{suffix}"
 
 class DefaultMapper:
     def map(self, value: Any) -> str:
